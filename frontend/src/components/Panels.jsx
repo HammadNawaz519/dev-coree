@@ -588,7 +588,11 @@ export function ShipDetail({ shipId }) {
           <div style={{display:'flex',flexDirection:'column',gap:6}}>
             {routeOptions.routes.map(r => {
               const sel = r.id === previewRouteId;
-              const ICONS = { safe:'🛡', fast:'⚡', eco:'🍃' };
+              const ICONS = {
+                safe: <svg style={{marginRight:4}} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+                fast: <svg style={{marginRight:4}} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
+                eco: <svg style={{marginRight:4}} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M12 2v20"/></svg>
+              };
               return (
                 <div
                   key={r.id}
@@ -631,10 +635,7 @@ export function ShipDetail({ shipId }) {
                 if (!chosen) return;
                 setSending(true); setFeedback('');
                 try {
-                  // Apply chosen route: reroute to same destination (engine will recalc
-                  // using current zone/weather state); if we wanted we could pass the
-                  // waypoints directly but REROUTE_PORT triggers a fresh A* on the server.
-                  await sendDirective(ship.id, 'REROUTE_PORT', { port_id: ship.destination_port });
+                  await sendDirective(ship.id, 'SET_ROUTE_PATH', { path: chosen.path });
                   setFeedback(`${chosen.label} route committed`);
                   clearRoutePreview();
                 } catch { setFeedback('Failed to commit route'); }
@@ -921,7 +922,158 @@ export function CaptainVitals({ ship }) {
   );
 }
 
-// ── Captain Alerts ────────────────────────────────────────────────────────────
+// ── AI Fleet Advisor Panel ─────────────────────────────────────────────────────
+export function AdvisorPanel({ data, loading, onRefresh }) {
+  const SEV_COLOR = { critical: '#c0392b', high: '#c07c2b', medium: '#1a6b95', low: '#2e7d6e', info: '#81A6C6' };
+  const IconReroute = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>;
+  const IconZone = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>;
+  const IconAid = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>;
+  const IconFuel = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>;
+  const IconEscort = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>;
+  const IconHold = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>;
+  const IconDefault = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>;
+
+  const ACTION_ICON = {
+    reroute: IconReroute, 'draw-zone': IconZone, 'send-aid': IconAid, 'fuel-transfer': IconFuel,
+    escort: IconEscort, 'hold-position': IconHold, default: IconDefault,
+  };
+
+  if (loading) return (
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:16,color:'#81A6C6'}}>
+      <div style={{animation:'spin 1.5s linear infinite',color:'#1a6b95',marginBottom:12}}>
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>
+      </div>
+      <div style={{fontSize:13,fontWeight:800,letterSpacing:'0.15em',color:'#2b3b49'}}>ANALYZING FLEET TELEMETRY</div>
+      <div style={{fontSize:11,color:'#5f6b77',maxWidth:220,textAlign:'center',lineHeight:1.5}}>
+        Cross-referencing live weather data, fuel burn rates, and ship routing parameters...
+      </div>
+    </div>
+  );
+
+  if (!data) return (
+    <div style={{display:'flex',flexDirection:'column',height:'100%',padding:'16px'}}>
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',background:'linear-gradient(180deg, #fafcff 0%, #f0f4f8 100%)',border:'1px solid #dce4eb',borderRadius:12,padding:'24px 20px',boxShadow:'0 4px 12px rgba(0,0,0,0.03)'}}>
+        <div style={{marginBottom:8,color:'#1a6b95'}}>
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
+        </div>
+        <div style={{fontSize:16,fontWeight:800,color:'#1a2b38',letterSpacing:'-0.02em',marginBottom:6}}>Fleet AI Advisor</div>
+        <div style={{fontSize:12,color:'#5f6b77',textAlign:'center',lineHeight:1.6,marginBottom:16}}>
+          The Fleet AI Advisor leverages real-time analytics to safeguard your maritime operations.
+        </div>
+        
+        <div style={{width:'100%',background:'#fff',borderRadius:8,padding:'12px',border:'1px solid #eef1f4',marginBottom:20}}>
+          <div style={{fontSize:10,fontWeight:800,color:'#81A6C6',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:8}}>Capabilities</div>
+          <ul style={{margin:0,paddingLeft:20,fontSize:11,color:'#2b3b49',lineHeight:1.7,fontWeight:600}}>
+            <li>Proactive weather rerouting (storm avoidance)</li>
+            <li>Predictive fuel burn analysis and S2S transfers</li>
+            <li>Distress signal triage and rapid response routing</li>
+          </ul>
+        </div>
+
+        <button onClick={onRefresh} style={{
+          width:'100%', padding:'12px 0', background:'linear-gradient(135deg, #1a6b95 0%, #2e7d6e 100%)',
+          color:'#fff', border:'none', borderRadius:8, fontSize:13, fontWeight:800, cursor:'pointer',
+          boxShadow:'0 4px 14px rgba(26,107,149,0.3)', transition:'all 0.2s', textTransform:'uppercase', letterSpacing:'0.05em'
+        }}
+        onMouseOver={e=>e.target.style.transform='translateY(-1px)'}
+        onMouseOut={e=>e.target.style.transform='translateY(0)'}
+        >Run Fleet Analysis</button>
+      </div>
+    </div>
+  );
+
+  if (data.error) return (
+    <div style={{padding:16,background:'#fef0f0',borderRadius:8,margin:12,fontSize:12,color:'#c0392b',fontWeight:600,border:'1px solid #fccaca'}}>
+      ERROR: {data.error}
+      <button onClick={onRefresh} style={{display:'block',marginTop:10,width:'100%',padding:'8px',borderRadius:6,border:'1px solid #c0392b',background:'#fff',color:'#c0392b',cursor:'pointer',fontSize:11,fontWeight:700}}>Retry Analysis</button>
+    </div>
+  );
+
+  const recs = data.recommendations || [];
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:12,padding:'14px 12px'}}>
+      {/* Header */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <div style={{fontSize:11,fontWeight:600,letterSpacing:'0.15em',textTransform:'uppercase',color:'#2b3b49'}}>
+          {recs.length} Actionable Insight{recs.length !== 1 ? 's' : ''}
+        </div>
+        <button onClick={onRefresh} style={{
+          fontSize:10, fontWeight:700, color:'#1a6b95', background:'#fff',
+          border:'1px solid #AACDDC', borderRadius:6, padding:'4px 12px', cursor:'pointer',
+          boxShadow:'0 2px 4px rgba(0,0,0,0.02)', transition:'all 0.15s'
+        }}
+        onMouseOver={e=>e.target.style.background='#EEF4F8'}
+        onMouseOut={e=>e.target.style.background='#fff'}
+        >Refresh</button>
+      </div>
+
+      {/* Summary */}
+      {data.summary && (
+        <div style={{background:'linear-gradient(135deg, #f0f8ff 0%, #e8f5f0 100%)',borderRadius:10,padding:'12px 14px',border:'1px solid #cce3ef',boxShadow:'0 2px 8px rgba(0,0,0,0.03)'}}>
+          <div style={{fontSize:10,fontWeight:800,color:'#81A6C6',letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>Executive Summary</div>
+          <div style={{fontSize:12,color:'#1a2b38',lineHeight:1.6,fontWeight:500}}>{data.summary}</div>
+        </div>
+      )}
+
+      {/* Recommendation cards */}
+      {recs.length === 0 && (
+        <div style={{textAlign:'center',padding:'30px 20px',background:'#fafcff',border:'1px dashed #cce3ef',borderRadius:10}}>
+          <div style={{fontSize:14,fontWeight:600,color:'#1a6b95',marginBottom:6}}>Fleet is optimal</div>
+          <div style={{fontSize:12,color:'#5f6b77',lineHeight:1.5}}>No high-priority interventions required at this time. Telemetry within safe parameters.</div>
+        </div>
+      )}
+      {recs.map((rec, i) => {
+        const urgColor = SEV_COLOR[rec.urgency] || '#81A6C6';
+        const icon = ACTION_ICON[rec.action_type] || ACTION_ICON.default;
+        return (
+          <div key={i} style={{
+            background:'#fff', borderRadius:12, border:`1px solid ${urgColor}44`,
+            padding:'14px', display:'flex', flexDirection:'column', gap:10,
+            boxShadow:'0 4px 12px rgba(0,0,0,0.04)'
+          }}>
+            {/* Top row */}
+            <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+              <div style={{padding:'6px',background:`${urgColor}11`,borderRadius:8,color:urgColor,fontSize:14,fontWeight:500}}>{icon}</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,fontWeight:500,color:'#1a2b38',lineHeight:1.3,marginBottom:2}}>{rec.title || rec.action_type || 'Recommendation'}</div>
+                {rec.ship_ids?.length > 0 && (
+                  <div style={{fontSize:10,color:'#81A6C6',fontWeight:500,letterSpacing:'0.02em'}}>{rec.ship_ids.join(', ')}</div>
+                )}
+              </div>
+            </div>
+            
+            {/* Reasoning */}
+            {rec.reasoning && (
+              <div style={{
+                fontSize:11,color:'#5f6b77',lineHeight:1.6,background:'#fafcff',
+                padding:'12px',borderRadius:8,borderLeft:`4px solid ${urgColor}66`,
+                boxShadow:'inset 0 2px 6px rgba(0,0,0,0.02)', marginTop:2
+              }}>
+                {rec.reasoning}
+              </div>
+            )}
+            
+            {/* Action */}
+            {rec.action && (
+              <button style={{
+                marginTop: 4, width: '100%', border: `1px solid ${urgColor}44`,
+                background: `${urgColor}11`, color: urgColor, borderRadius: 8,
+                padding: '10px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                transition: 'all 0.2s ease', textAlign: 'center', letterSpacing:'0.03em'
+              }}
+              onMouseOver={(e) => { e.target.style.background = `${urgColor}22`; e.target.style.transform = 'translateY(-1px)'; }}
+              onMouseOut={(e) => { e.target.style.background = `${urgColor}11`; e.target.style.transform = 'translateY(0)'; }}
+              >
+                Execute: {rec.action}
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}// ── Captain Alerts ────────────────────────────────────────────────────────────
 export function CaptainAlerts({ alerts = [], ackAlert }) {
   if (!alerts.length) return (
     <div className="panel-empty">No alerts for your vessel</div>
@@ -989,7 +1141,10 @@ export function CaptainDirectives({ shipId }) {
           {d.payload && Object.keys(d.payload).length > 0 && (
             <div style={{fontSize:11,color:'#81A6C6',marginBottom:8,fontFamily:'monospace',
               background:'rgba(255,255,255,0.55)',padding:'4px 8px',borderRadius:6}}>
-              {Object.entries(d.payload).map(([k,v]) => `${k}: ${v}`).join(' · ')}
+              {Object.entries(d.payload).map(([k,v]) => {
+                if (k === 'path' && Array.isArray(v)) return `path: [${v.length} waypoints]`;
+                return `${k}: ${v}`;
+              }).join(' · ')}
             </div>
           )}
           <div style={{fontSize:10,color:'#81A6C6',marginBottom:10}}>

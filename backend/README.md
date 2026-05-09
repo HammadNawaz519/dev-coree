@@ -1,22 +1,20 @@
 # Fleet Command System — Strait of Hormuz Crisis Ops
 
-**Live Demo:** [https://dev--core.vercel.app/](https://dev--core.vercel.app/)
-
 Real-time maritime command system. 15 ships. 1 Hz updates. AI distress NLP. Weather-aware A\* routing.
 
 ## Stack
 
 | Layer | Tech |
 |---|---|
-| Backend | [Node.js 20](https://nodejs.org/), [Express](https://expressjs.com/), [Socket.IO](https://socket.io/), [ioredis](https://github.com/redis/ioredis), [@turf/turf](https://turfjs.org/) |
-| Frontend | [React 18](https://react.dev/), [Vite](https://vitejs.dev/), [Mapbox GL JS](https://docs.mapbox.com/mapbox-gl-js/), [Mapbox GL Draw](https://github.com/mapbox/mapbox-gl-draw), [Zustand](https://github.com/pmndrs/zustand) |
-| Infra | [Docker Compose](https://docs.docker.com/compose/) (Node backend + Nginx + Redis) |
-| AI | [OpenRouter](https://openrouter.ai/) (Supports Gemini 2.0 Flash, GPT-4o, etc.) -> [n8n webhook](https://n8n.io/) -> keyword fallback |
-| Weather | [Open-Meteo API](https://open-meteo.com/) (free, no key needed) - real-time wind, waves, precipitation, visibility |
+| Backend | Node.js 20, Express, Socket.IO, ioredis, @turf/turf |
+| Frontend | React 18, Vite, Mapbox GL JS, Mapbox GL Draw, Zustand |
+| Infra | Docker Compose (Node backend + Nginx + Redis) |
+| AI | OpenRouter (Supports Gemini 2.0 Flash, GPT-4o, etc.) → n8n webhook → keyword fallback |
+| Weather | Open-Meteo API (free, no key needed) — real-time wind, waves, precipitation, visibility |
 
 ## Features
 
-### Weather System
+### Weather System ⛈
 - **Real-time weather data**: Open-Meteo API provides current conditions (wind speed, wave height, precipitation, visibility)
 - **Weather zones**: Automatically generated danger areas with intensity tracking (0-100%)
 - **Fuel impact**: Ships in adverse weather incur +30% fuel burn penalty
@@ -137,25 +135,6 @@ Redis (optional)
 | `ESCORT` | `{ target_ship_id }` | Shadow a ship 3 km behind |
 | `CANCEL_ESCORT` | — | Stop escorting |
 | `MEDICAL_AID` | `{ target_ship_id }` | Dispatch ship to target's position |
-
-### Sample Data Response
-
-Here is a small snippet of what the ship data looks like from the backend API:
-
-```json
-{
-  "id": "VESSEL-001",
-  "name": "Gulf Voyager",
-  "type": "Oil Tanker",
-  "status": "normal",
-  "lat": 26.5512,
-  "lng": 55.1234,
-  "heading": 124,
-  "speed": 14.5,
-  "fuel": 6500,
-  "destination_port": "Dubai"
-}
-```
 
 ## Features
 

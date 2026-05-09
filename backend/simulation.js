@@ -5,7 +5,7 @@ const turf = require('@turf/turf');
 const { haversine, bearing, AStarRouter } = require('./router');
 
 const path = require('path');
-const FLEET_JSON = process.env.FLEET_JSON || path.join(__dirname, '..', 'fleet.json');
+const FLEET_JSON = process.env.FLEET_JSON || path.join(__dirname, 'fleet.json');
 
 const HISTORY_INTERVAL = 30;  // seconds
 const MAX_HISTORY = 120;
@@ -514,7 +514,15 @@ class SimulationEngine {
       ship.destination_port = newPort;
       ship.status = 'rerouting';
       this._computeRoute(ship);
-      return { ok: true };
+    } else if (dtype === 'SET_ROUTE_PATH') {
+      const { path } = payload;
+      if (Array.isArray(path) && path.length > 0) {
+        ship.path = path;
+        ship.path_index = 0;
+        ship.status = 'normal';
+        return { ok: true };
+      }
+      return { ok: false, error: 'Invalid or empty path provided' };
 
     } else if (dtype === 'HOLD_POSITION') {
       ship.status = 'stopped';

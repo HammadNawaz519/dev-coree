@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useStore } from './store';
 import MapBox from './components/MapBox';
 import { AlertPanel, ShipList, ShipDetail, CaptainPanel, ZonePanel, WeatherPanel,
-         CaptainVitals, CaptainAlerts, CaptainDirectives, CaptainDistress, CaptainS2S } from './components/Panels';
+         CaptainVitals, CaptainAlerts, CaptainDirectives, CaptainDistress, CaptainS2S,
+         AdvisorPanel } from './components/Panels';
 import './index.css';
 
 const SHIPS_META = [
@@ -15,7 +16,6 @@ const SHIPS_META = [
 
 // ── Landing Page ──────────────────────────────────────────────────────────────
 function Landing({ onEnter }) {
-
   return (
     <div className="landing">
       <div className="landing__orbs" aria-hidden="true">
@@ -28,44 +28,44 @@ function Landing({ onEnter }) {
       <div className="landing__content">
         <div className="landing__badge reveal">
           <span className="badge-dot" />
-          Fleetwatch Ops
+          Fleetwatch Ops · Live
         </div>
 
         <section className="landing__hero reveal delay-1">
-          <div className="landing__eyebrow">Live Fleet Ops — Strait of Hormuz</div>
+          <div className="landing__eyebrow">Strait of Hormuz · Real-time Fleet Operations</div>
           <h1 className="landing__title">Maritime Command</h1>
           <p className="landing__subtitle">
-            Track 15 ships, route around risk zones, respond to distress in real-time.
+            Track 15 vessels, route around risk zones, and respond to distress signals in real-time.
           </p>
           <div className="landing__stats">
-            <div className="stat-card">
-              <div className="stat-value">15</div>
-              <div className="stat-label">Vessels</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">1Hz</div>
-              <div className="stat-label">Updates</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">AI</div>
-              <div className="stat-label">Distress NLP</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">A*</div>
-              <div className="stat-label">Routing</div>
-            </div>
+            {[
+              { value: '15', label: 'Vessels' },
+              { value: '1 Hz', label: 'Updates' },
+              { value: 'AI', label: 'Distress NLP' },
+              { value: 'A*', label: 'Routing' },
+            ].map(({ value, label }) => (
+              <div key={label} className="stat-card">
+                <div className="stat-value">{value}</div>
+                <div className="stat-label">{label}</div>
+              </div>
+            ))}
           </div>
           <div className="landing__note">Geofencing · Proximity alerts · Weather-aware routing · 1-hr playback</div>
         </section>
 
-        {/* ── Role cards ── */}
         <section className="landing__choices reveal delay-2">
 
           {/* Fleet Command card */}
-          <div className="role-card" style={{ '--accent': '#81A6C6', '--accent-strong': '#6E93B3', '--accent-soft': '#FFFAF0' }}>
-            <div className="role-card__icon">CMD</div>
+          <div className="role-card" style={{ '--accent': '#4F88A8', '--accent-strong': '#3C6F8F', '--accent-soft': '#e8f4fb' }}>
+            <div className="role-card__icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#4F88A8" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="2" y1="12" x2="22" y2="12"/>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+              </svg>
+            </div>
             <div className="role-card__title">Fleet Command</div>
-            <p className="role-card__desc">Oversee the entire fleet, draw restricted zones, issue directives to any ship.</p>
+            <p className="role-card__desc">Oversee the entire fleet, draw restricted zones, and issue directives to any vessel.</p>
             <ul className="role-card__list">
               {['Live map of all 15 ships', 'Draw & delete restricted zones', 'Issue directives to captains', 'AI fleet advisor', '1-hour playback timeline'].map(f => (
                 <li key={f} className="role-card__item">
@@ -75,37 +75,31 @@ function Landing({ onEnter }) {
               ))}
             </ul>
             <button onClick={() => onEnter('command', null)} className="role-card__button">
-              Enter Command →
+              Enter Command
             </button>
           </div>
 
-          {/* Ship Captain card — redesigned to show ships immediately */}
-          <div className="role-card role-card--captain"
-            style={{ '--accent': '#4F88A8', '--accent-strong': '#3C6F8F', '--accent-soft': '#FFFAF0' }}>
-            <div className="role-card__icon">CPT</div>
-            <div className="role-card__title">Ship Captain</div>
-            <p className="role-card__desc">Your ship view. Receive directives from Command and send distress signals.</p>
-            
-            <div style={{marginTop: 20, marginBottom: 10, fontSize: 13, fontWeight: 800, color: '#3C6F8F', textTransform: 'uppercase', letterSpacing: '0.05em'}}>
-              Select Vessel to Board:
+          {/* Ship Captain card */}
+          <div className="role-card" style={{ '--accent': '#2e7d6e', '--accent-strong': '#256358', '--accent-soft': '#e8f6f3' }}>
+            <div className="role-card__icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2e7d6e" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>
+              </svg>
             </div>
-            
-            <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8}}>
-              {SHIPS_META.map(s => (
-                <button
-                  key={s.id}
-                  onClick={() => onEnter('captain', s.id)}
-                  style={{
-                    padding: '8px 4px', background: '#EEF4F8', border: '1px solid #AACDDC', 
-                    borderRadius: 6, cursor: 'pointer', textAlign: 'center', transition: 'all 0.2s'
-                  }}
-                  onMouseOver={(e) => { e.currentTarget.style.background = '#3C6F8F'; e.currentTarget.style.color = '#fff'; }}
-                  onMouseOut={(e) => { e.currentTarget.style.background = '#EEF4F8'; e.currentTarget.style.color = 'inherit'; }}
-                >
-                  <div style={{fontSize: 10, fontWeight: 800, opacity: 0.7, marginBottom: 2}}>{s.id}</div>
-                  <div style={{fontSize: 12, fontWeight: 700}}>{s.name}</div>
-                </button>
-              ))}
+            <div className="role-card__title">Ship Captain</div>
+            <p className="role-card__desc">Your ship view. Receive directives from Command and submit distress signals.</p>
+
+            <div className="vessel-dropdown--open">
+              <div className="vessel-dropdown__label">Select a vessel to board</div>
+              <div className="vessel-dropdown__grid">
+                {SHIPS_META.map(s => (
+                  <button key={s.id} onClick={() => onEnter('captain', s.id)} className="vessel-btn">
+                    <span className="vessel-btn__name">{s.name}</span>
+                    <span className="vessel-btn__id">{s.id}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -127,6 +121,8 @@ function ConnPill({ connected }) {
 
 // ── Command Interface ─────────────────────────────────────────────────────────
 function CommandApp() {
+  const ships            = useStore(s => s.ships);
+  const weatherZones     = useStore(s => s.weatherZones);
   const selectedShipId   = useStore(s => s.selectedShipId);
   const setSelectedShipId = useStore(s => s.setSelectedShipId);
   const alerts           = useStore(s => s.alerts);
@@ -140,7 +136,75 @@ function CommandApp() {
   const exitPlayback     = useStore(s => s.exitPlayback);
   const zones            = useStore(s => s.zones);
   
-  const [rightTab, setRightTab] = useState('ship'); // 'ship', 'zones', or 'weather'
+  const [rightTab, setRightTab] = useState('ship'); // 'ship' | 'zones' | 'weather' | 'advisor'
+  const [advisorData, setAdvisorData] = useState(null);
+  const [advisorLoading, setAdvisorLoading] = useState(false);
+  const runAdvisor = async () => {
+    setAdvisorLoading(true);
+    try {
+      const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+      if (apiKey) {
+        const systemPrompt = `You are the Fleet Command AI Advisor.
+Current fleet state:
+- Ships: ${ships.length} (${ships.filter(s => s.status !== 'normal').length} off-nominal)
+- Active Alerts: ${alerts.filter(a => !a.acknowledged).length} unacknowledged
+- Weather Zones: ${weatherZones.length} active storms
+- Restricted Zones: ${zones.length}
+
+Analyze this state and provide exactly 3 strategic, actionable recommendations for the Fleet Commander. Focus on routing efficiency, fuel conservation, and distress response.
+Output STRICTLY valid JSON like:
+{ "recommendations": [ { "title": "...", "description": "...", "priority": "high|medium|low" } ] }`;
+
+        // Model fallback chain — Groq free tier, tries each until one succeeds
+        const MODELS = [
+          import.meta.env.VITE_GROQ_MODEL || 'llama-3.3-70b-versatile',
+          'llama-3.1-8b-instant',
+          'gemma2-9b-it',
+          'mixtral-8x7b-32768',
+        ];
+
+        let lastErr = null;
+        for (const model of MODELS) {
+          try {
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ model, messages: [{ role: 'user', content: systemPrompt }] }),
+            });
+
+            if (res.status === 429) {
+              lastErr = `${model} rate limited`;
+              await new Promise(r => setTimeout(r, 1200));
+              continue;
+            }
+            if (!res.ok) { lastErr = `${model} returned ${res.status}`; continue; }
+            const json = await res.json();
+            const text = json.choices?.[0]?.message?.content || '';
+            const m = text.match(/\{[\s\S]*\}/);
+            if (!m) { lastErr = `${model} gave unparseable response`; continue; }
+            setAdvisorData(JSON.parse(m[0]));
+            setAdvisorLoading(false);
+            return;
+          } catch (e) { lastErr = e.message; }
+        }
+        throw new Error(lastErr || 'All models unavailable');
+      } else {
+        // No API key — fall back to backend
+        const BACKEND = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
+        const r = await fetch(`${BACKEND}/api/advisor`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+        });
+        if (!r.ok) throw new Error();
+        setAdvisorData(await r.json());
+      }
+    } catch (e) {
+      setAdvisorData({ error: `Advisor unavailable — ${e.message || 'check OPENROUTER_API_KEY'}` });
+    }
+    setAdvisorLoading(false);
+  };
 
   const unacked = alerts.filter(a => !a.acknowledged).length;
 
@@ -212,58 +276,40 @@ function CommandApp() {
         {/* Right: Ship detail + Zones */}
         <aside className="app-sidebar">
           {/* Tab buttons */}
-          <div style={{display:'flex',borderBottom:'1px solid rgba(129, 166, 198, 0.12)',flexShrink:0}}>
-            <button 
-              onClick={() => setRightTab('ship')}
-              style={{
-                flex:1,padding:'12px 16px',fontSize:'11px',fontWeight:700,letterSpacing:'0.1em',
-                textTransform:'uppercase',cursor:'pointer',border:'none',background:'transparent',
-                color: rightTab === 'ship' ? '#81A6C6' : '#5f6b77',
-                borderBottom: rightTab === 'ship' ? '2px solid #81A6C6' : 'none',
-                transition:'all 0.2s'
-              }}
-            >
-              Ship Detail
-            </button>
-            <button 
-              onClick={() => setRightTab('zones')}
-              style={{
-                flex:1,padding:'12px 16px',fontSize:'11px',fontWeight:700,letterSpacing:'0.1em',
-                textTransform:'uppercase',cursor:'pointer',border:'none',background:'transparent',
-                color: rightTab === 'zones' ? '#81A6C6' : '#5f6b77',
-                borderBottom: rightTab === 'zones' ? '2px solid #81A6C6' : 'none',
-                transition:'all 0.2s',
-                position:'relative'
-              }}
-            >
-              Zones {zones.length > 0 && <span style={{position:'absolute',top:8,right:8,display:'inline-flex',alignItems:'center',justifyContent:'center',minWidth:'18px',height:'18px',padding:'0 5px',borderRadius:'999px',fontSize:'10px',fontWeight:800,background:'#c0392b',color:'#fff'}}>{zones.length}</span>}
-            </button>
-            <button 
-              onClick={() => setRightTab('weather')}
-              style={{
-                flex:1,padding:'12px 16px',fontSize:'11px',fontWeight:700,letterSpacing:'0.1em',
-                textTransform:'uppercase',cursor:'pointer',border:'none',background:'transparent',
-                color: rightTab === 'weather' ? '#81A6C6' : '#5f6b77',
-                borderBottom: rightTab === 'weather' ? '2px solid #81A6C6' : 'none',
-                transition:'all 0.2s'
-              }}
-            >
-              Weather
-            </button>
+          <div style={{display:'flex',flexWrap:'wrap',borderBottom:'1px solid rgba(129, 166, 198, 0.12)',flexShrink:0}}>
+            {[
+              { id: 'ship',    label: 'Ship' },
+              { id: 'zones',   label: `Zones${zones.length > 0 ? ` (${zones.length})` : ''}` },
+              { id: 'weather', label: 'Weather' },
+              { id: 'advisor', label: 'AI Advisor' },
+            ].map(tab => (
+              <button key={tab.id} onClick={() => { setRightTab(tab.id); if (tab.id === 'advisor' && !advisorData) runAdvisor(); }}
+                style={{
+                  flex:1, minWidth:'20%', padding:'10px 4px', fontSize:'10px', fontWeight:700,
+                  letterSpacing:'0.08em', textTransform:'uppercase', cursor:'pointer',
+                  border:'none', background:'transparent',
+                  color: rightTab === tab.id ? '#81A6C6' : '#5f6b77',
+                  borderBottom: rightTab === tab.id ? '2px solid #81A6C6' : 'none',
+                  transition:'all 0.2s',
+                }}
+              >{tab.label}</button>
+            ))}
           </div>
           
           {/* Tab content */}
           <div className="sidebar-section sidebar-section--flex">
             <div className="sidebar-section__title">
-              {rightTab === 'ship' ? 'Ship Detail' : rightTab === 'zones' ? 'Restricted Zones' : 'Weather Systems'}
+              {rightTab === 'ship' ? 'Ship Detail' : rightTab === 'zones' ? 'Restricted Zones' : rightTab === 'weather' ? 'Weather Systems' : 'AI Fleet Advisor'}
             </div>
             <div className="sidebar-section__body sidebar-section__body--scroll">
               {rightTab === 'ship' ? (
                 <ShipDetail shipId={selectedShipId} />
               ) : rightTab === 'zones' ? (
                 <ZonePanel />
-              ) : (
+              ) : rightTab === 'weather' ? (
                 <WeatherPanel />
+              ) : (
+                <AdvisorPanel data={advisorData} loading={advisorLoading} onRefresh={runAdvisor} />
               )}
             </div>
           </div>
@@ -393,6 +439,18 @@ export default function App() {
   useEffect(() => {
     initSocket();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Update tab title based on active view
+  useEffect(() => {
+    if (!session) {
+      document.title = 'Maritime Command — Fleetwatch';
+    } else if (session.role === 'command') {
+      document.title = 'Fleet Command — Maritime Ops';
+    } else {
+      const ship = SHIPS_META.find(s => s.id === session.captainShipId);
+      document.title = ship ? `Capt. ${ship.name} (${ship.id}) — Maritime Ops` : 'Captain View — Maritime Ops';
+    }
+  }, [session]);
 
   if (!session) {
     return (

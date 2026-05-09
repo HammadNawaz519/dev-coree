@@ -1,9 +1,76 @@
 import { create } from 'zustand';
 import { io } from 'socket.io-client';
-
-const BACKEND = import.meta.env.DEV ? 'http://localhost:8000' : '';
+const BACKEND = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
 
 let socket = null;
+
+// ── Audio alert system (Web Audio API — no external files needed) ──
+const audioCtx = () => {
+  if (!window._alertAudioCtx) {
+    try { window._alertAudioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  }
+  return window._alertAudioCtx;
+};
+
+function playAlertSound(type) {
+  try {
+    const ctx = audioCtx();
+    if (!ctx) return;
+    // Resume suspended context (browser policy requires user gesture first)
+    if (ctx.state === 'suspended') ctx.resume();
+
+    const now = ctx.currentTime;
+    const gain = ctx.createGain();
+    gain.connect(ctx.destination);
+
+    if (type === 'geofence') {
+      // Urgent double-beep: 880 Hz + 1100 Hz
+      [0, 0.22].forEach(delay => {
+        const osc = ctx.createOscillator();
+        osc.type = 'square';
+        osc.frequency.value = delay === 0 ? 880 : 1100;
+        osc.connect(gain);
+        gain.gain.setValueAtTime(0, now + delay);
+        gain.gain.linearRampToValueAtTime(0.18, now + delay + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.2);
+        osc.start(now + delay);
+        osc.stop(now + delay + 0.22);
+      });
+    } else if (type === 'proximity') {
+      // Single mid-tone warning
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(660, now);
+      osc.frequency.linearRampToValueAtTime(520, now + 0.3);
+      osc.connect(gain);
+      gain.gain.setValueAtTime(0.15, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      osc.start(now); osc.stop(now + 0.36);
+    } else if (type === 'distress') {
+      // Descending alarm: 3 pulses
+      [0, 0.28, 0.56].forEach((delay, i) => {
+        const osc = ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.value = 1000 - i * 180;
+        osc.connect(gain);
+        gain.gain.setValueAtTime(0, now + delay);
+        gain.gain.linearRampToValueAtTime(0.22, now + delay + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.25);
+        osc.start(now + delay);
+        osc.stop(now + delay + 0.26);
+      });
+    } else {
+      // Generic soft ping
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = 740;
+      osc.connect(gain);
+      gain.gain.setValueAtTime(0.12, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+      osc.start(now); osc.stop(now + 0.41);
+    }
+  } catch (e) {}
+}
 
 function getSocket() {
   if (!socket) {
@@ -35,8 +102,9 @@ export const useStore = create((set, get) => ({
   playbackIndex: 0,
   isAutoPlaying: false,
   playbackSpeed: 2,   // frames per second
-  routeOptions: null,      // { ship_id, destination, routes: [...] } | null
-  previewRouteId: null,    // id of the route being highlighted on the map
+  routeOptions: null,
+  previewRouteId: null,
+  navigablePolygon: null,   // [[lat,lng],...] water boundary for waypoint filtering
 
   // Actions
   setRole: (role, captainShipId = null) => set({ role, captainShipId }),
@@ -98,25 +166,18 @@ export const useStore = create((set, get) => ({
 
     sock.on('new_alert', (alert) => {
       set(s => ({ alerts: [alert, ...s.alerts] }));
-      // Sound alert for severity >= 4
-      if (alert.severity >= 4) {
-        try {
-          const ctx = new AudioContext();
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.connect(gain); gain.connect(ctx.destination);
-          osc.frequency.value = 880;
-          gain.gain.setValueAtTime(0.3, ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-          osc.start(); osc.stop(ctx.currentTime + 0.5);
-        } catch(e) {}
-      }
+      const t = (alert.type || '').toLowerCase();
+      if (t.includes('distress')) playAlertSound('distress');
+      else if (t.includes('proximity') || t.includes('collision')) playAlertSound('proximity');
+      else if (alert.severity >= 4) playAlertSound('geofence');
+      else playAlertSound('ping');
     });
 
     sock.on('geofence_breach', (payload) => {
       const alert = payload?.alert;
       if (!alert) return;
       set(s => (s.alerts.some(a => a.id === alert.id) ? s : { alerts: [alert, ...s.alerts] }));
+      playAlertSound('geofence');
     });
 
     // Fallback: fetch initial fleet state via REST in case socket fails or initial emit is missed
@@ -132,6 +193,7 @@ export const useStore = create((set, get) => ({
           alerts: data.alerts || [],
           weatherZones: data.weather_zones || [],
           tick: data.tick || 0,
+          navigablePolygon: data.navigable_polygon || get().navigablePolygon,
         });
       } catch (e) {
         // ignore network errors, socket listeners remain primary

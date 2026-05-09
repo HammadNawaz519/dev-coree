@@ -43,7 +43,7 @@ function segsHit(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) {
 
 // ── A* grid router ──────────────────────────────────────────────────────────
 
-const RES = 60;
+const RES = 120;
 const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1]];
 
 // Cost multiplier for a cell that sits inside a weather zone.
@@ -61,7 +61,7 @@ class AStarRouter {
     this._buildBase();
   }
 
-  _key(r, c) { return (r << 8) | c; }   // fast integer key (RES < 256)
+  _key(r, c) { return r * 256 + c; }   // fast integer key (RES < 256)
 
   _toLatLng(r, c) {
     const bb = this.bbox;
@@ -87,7 +87,7 @@ class AStarRouter {
 
   _snap(passable, r, c) {
     if (passable.has(this._key(r, c))) return [r, c];
-    for (let d = 1; d < 10; d++)
+    for (let d = 1; d < 15; d++)
       for (let dr = -d; dr <= d; dr++)
         for (let dc = -d; dc <= d; dc++) {
           const nr = r + dr, nc = c + dc;
@@ -111,7 +111,7 @@ class AStarRouter {
     const weatherCells = new Set();
     const passableAll  = new Set();   // navigable minus restricted zones
     for (const key of this.base) {
-      const r = key >> 8, c = key & 0xFF;
+      const r = Math.floor(key / 256), c = key % 256;
       const [lat, lng] = this._toLatLng(r, c);
       let zoneBlocked = false;
       for (const poly of zPolys) {
@@ -166,6 +166,7 @@ class AStarRouter {
     const open = [[0, start, sKey]];
 
     while (open.length) {
+      // min-heap pop by linear scan (small enough for our grid sizes)
       let mi = 0;
       for (let i = 1; i < open.length; i++) if (open[i][0] < open[mi][0]) mi = i;
       const [, cur, ck] = open.splice(mi, 1)[0];
@@ -180,11 +181,9 @@ class AStarRouter {
         }
         path.push(start);
         path.reverse();
-        const simp = [];
-        for (let i = 0; i < path.length; i += 3) simp.push(path[i]);
-        if (this._key(...simp[simp.length - 1]) !== this._key(...path[path.length - 1]))
-          simp.push(path[path.length - 1]);
-        return simp.map(cell => this._toLatLng(...cell));
+        
+        // Remove the 3-node skip simplification to strictly follow passable water cells
+        return path.map(cell => this._toLatLng(...cell));
       }
 
       const [r, c] = cur;
@@ -226,7 +225,7 @@ class AStarRouter {
     const weatherCells = new Set();
     const passableAll  = new Set();
     for (const key of this.base) {
-      const r = key >> 8, c = key & 0xFF;
+      const r = Math.floor(key / 256), c = key % 256;
       const [lat, lng] = this._toLatLng(r, c);
       let zb = false;
       for (const poly of zPolys) { if (pointInPoly(lng, lat, poly)) { zb = true; break; } }

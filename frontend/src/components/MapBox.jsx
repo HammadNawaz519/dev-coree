@@ -5,17 +5,46 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import { useStore } from '../store';
 
-mapboxgl.accessToken =
-  import.meta.env.VITE_MAPBOX_TOKEN ||
-  'ur api key ';
+mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
+if (!mapboxgl.accessToken) console.error('[MapBox] VITE_MAPBOX_TOKEN is not set — map will not load.');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-// 1 degree latitude ≈ 111.32 km. Max ship speed ~30 knots = 55.56 km/h = 0.01543 km/s
-// Converted to degrees/sec for the speed cap: 0.01543 / 111.32 ≈ 0.0001386 °/s
 const KM_PER_DEG = 111.32;
-const MAX_KNOTS = 35;                               // absolute physical ceiling
-const MAX_KM_S = (MAX_KNOTS * 1.852) / 3600;      // km per second
-const MAX_DEG_S = MAX_KM_S / KM_PER_DEG;           // degrees per second (lat)
+const MAX_KNOTS = 35;
+const MAX_KM_S = (MAX_KNOTS * 1.852) / 3600;
+const MAX_DEG_S = MAX_KM_S / KM_PER_DEG;
+
+// How many degrees apart two coords must be to count as "reached"
+const WAYPOINT_REACH_DEG = 0.003;  // ~330 m — tight enough to stay on-path
+
+// Navigable water polygon for the Strait of Hormuz region [lat, lng]
+// Source: fleet.json — used to filter route waypoints so ships stay on water
+const NAVIGABLE_POLYGON = [
+  [29.70,48.55],[29.40,49.50],[28.90,50.30],[28.50,50.90],[28.00,51.50],
+  [27.50,52.20],[27.10,52.90],[26.85,53.60],[26.80,54.20],[26.80,54.90],
+  [26.85,55.60],[26.90,56.00],[27.00,56.50],[27.10,57.00],[26.80,57.60],
+  [26.30,58.10],[25.80,58.60],[25.30,59.10],[24.50,59.60],[23.50,59.90],
+  [22.50,60.00],[22.00,60.00],[22.20,58.80],[23.00,58.30],[23.70,58.00],
+  [24.40,57.60],[24.90,57.20],[25.30,56.90],[25.70,56.80],[26.10,56.80],
+  [26.50,56.75],[26.75,56.50],[26.80,56.10],[26.65,55.80],[26.40,55.50],
+  [26.10,55.20],[25.80,55.00],[25.65,54.70],[25.55,54.20],[25.50,53.60],
+  [25.60,53.00],[25.80,52.40],[26.10,51.90],[26.40,51.50],[26.60,51.00],
+  [26.70,50.50],[26.80,50.10],[27.10,49.70],[27.60,49.30],[28.20,49.00],
+  [28.80,48.80],[29.30,48.60],[29.70,48.55],
+];
+
+// Ray-cast point-in-polygon test against the navigable water area
+function onWater(lat, lng) {
+  const poly = NAVIGABLE_POLYGON;
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [yi, xi] = poly[i];
+    const [yj, xj] = poly[j];
+    if (((xi > lng) !== (xj > lng)) && (lat < (yj - yi) * (lng - xi) / (xj - xi) + yi))
+      inside = !inside;
+  }
+  return inside;
+}
 
 // ── Status → color ────────────────────────────────────────────────────────────
 const STATUS = {
@@ -37,33 +66,112 @@ function shortAngleDiff(from, to) {
   return d;
 }
 
-// Clamp delta-degrees so it never implies speed > MAX_DEG_S * dtSec
-function clampDeg(delta, dtSec) {
-  const maxDelta = MAX_DEG_S * dtSec;
-  return Math.max(-maxDelta, Math.min(maxDelta, delta));
+// Inject ship animation CSS once
+if (typeof document !== 'undefined' && !document.getElementById('ship-anim-css')) {
+  const s = document.createElement('style');
+  s.id = 'ship-anim-css';
+  s.textContent = `
+    @keyframes ship-pulse {
+      0%   { transform: scale(1);   opacity: 0.55; }
+      50%  { transform: scale(1.7); opacity: 0.15; }
+      100% { transform: scale(1);   opacity: 0.55; }
+    }
+    @keyframes ship-ping {
+      0%   { transform: scale(0.8); opacity: 0.7; }
+      100% { transform: scale(2.4); opacity: 0;   }
+    }
+    @keyframes ship-wake {
+      0%   { opacity: 0.45; transform: scaleX(1);   }
+      100% { opacity: 0;    transform: scaleX(2.2); }
+    }
+    .ship-marker:hover .ship-inner { filter: brightness(1.25); }
+    .ship-marker { transition: transform 0.15s ease; }
+    .ship-marker:hover { transform: scale(1.12); }
+    /* Popup fade-in */
+    .mapboxgl-popup { animation: popup-fadein 0.18s ease; }
+    @keyframes popup-fadein {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .mapboxgl-popup-content {
+      border-radius: 14px !important;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.12) !important;
+      padding: 0 !important;
+      overflow: hidden;
+      border: 1px solid rgba(129,166,198,0.25) !important;
+    }
+    .mapboxgl-popup-tip { border-top-color: #fff !important; }
+  `;
+  document.head.appendChild(s);
 }
 
-function makeShipEl(color, isSelected) {
-  const el = document.createElement('div');
-  const size = isSelected ? 36 : 30;
-  el.style.cssText = `
-    width:${size}px;height:${size}px;position:relative;cursor:pointer;
-    transition:all 0.2s;will-change:transform;
-    filter:drop-shadow(0 2px 6px rgba(0,0,0,0.4));
+function makeShipEl(color, isSelected, status) {
+  const outer = document.createElement('div');
+  const SIZE = 44;
+  outer.className = 'ship-marker';
+  outer.style.cssText = `width:${SIZE}px;height:${SIZE}px;position:relative;cursor:pointer;`;
+
+  const isDistressed = status === 'distressed' || status === 'stranded';
+  const isWarning    = status === 'rerouting'  || status === 'insufficient_fuel';
+
+  // Ping ring for distressed/warning ships
+  const pingRing = isDistressed || isWarning ? `
+    <div style="
+      position:absolute;inset:0;border-radius:50%;
+      border:2px solid ${color};
+      animation:ship-ping ${isDistressed ? '1s' : '1.6s'} cubic-bezier(0,0,0.2,1) infinite;
+      pointer-events:none;
+    "></div>` : '';
+
+  // Outer glow pulse
+  const glowRing = `
+    <div style="
+      position:absolute;inset:4px;border-radius:50%;
+      background:${color};
+      animation:ship-pulse 2.4s ease-in-out infinite;
+      pointer-events:none;
+    "></div>`;
+
+  // Wake trail (ellipse behind the ship — rotated via parent)
+  const wake = `
+    <div style="
+      position:absolute;left:50%;bottom:-6px;
+      width:10px;height:18px;
+      transform:translateX(-50%);
+      background:radial-gradient(ellipse at top, ${color}55 0%, transparent 70%);
+      animation:ship-wake 1.2s ease-out infinite;
+      pointer-events:none;
+    "></div>`;
+
+  outer.innerHTML = `
+    ${pingRing}
+    ${glowRing}
+    ${wake}
+    <div class="ship-inner" style="
+      position:absolute;inset:0;
+      display:flex;align-items:center;justify-content:center;
+      transition:filter 0.2s;
+    ">
+      <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <filter id="ship-glow-${color.replace('#','')}" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="2" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <!-- hull -->
+        <polygon points="16,2 22,26 16,22 10,26"
+          fill="${color}" stroke="white" stroke-width="1.6" stroke-linejoin="round"
+          filter="url(#ship-glow-${color.replace('#','')})"/>
+        <!-- superstructure -->
+        <rect x="13" y="12" width="6" height="5" rx="1.5" fill="white" opacity="0.9"/>
+        <!-- bow light -->
+        <circle cx="16" cy="4" r="1.5" fill="white" opacity="0.8"/>
+        ${isSelected ? `<circle cx="16" cy="16" r="14" stroke="${color}" stroke-width="2" fill="none" opacity="0.5"/>` : ''}
+      </svg>
+    </div>
   `;
-  // Outer glow ring + ship body
-  el.innerHTML = `
-    <svg width="${size}" height="${size}" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <!-- glow ring -->
-      <circle cx="18" cy="18" r="16" fill="${color}" opacity="${isSelected ? '0.28' : '0.14'}" />
-      <circle cx="18" cy="18" r="16" stroke="${color}" stroke-width="${isSelected ? '2' : '1.2'}" fill="none" opacity="0.7" />
-      <!-- ship hull: narrow bow at top, wide stern -->
-      <polygon points="18,4 25,28 18,24 11,28" fill="${color}" stroke="white" stroke-width="1.8" stroke-linejoin="round"/>
-      <!-- bridge superstructure -->
-      <rect x="15" y="14" width="6" height="5" rx="1" fill="white" opacity="0.85"/>
-    </svg>
-  `;
-  return el;
+  return outer;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -78,10 +186,10 @@ export default function MapBox({ isCommand }) {
 
   // Per-ship interpolation state lives entirely outside React state.
   // Shape: { [shipId]: { marker, popup, el,
-  //   curLng, curLat, curHdg,   ← what's visually on screen right now
-  //   tgtLng, tgtLat, tgtHdg,  ← server-authoritative target
-  //   speed,                    ← knots (from server) for max-speed cap
-  //   lastMs } }               ← performance.now() when target was last set
+  //   curLng, curLat, curHdg,   ← currently rendered position
+  //   pathQueue,                ← [[lng,lat],...] waypoints yet to visit (Mapbox order)
+  //   speed,                    ← knots from server
+  //   _pinned, _lastShip } }
   const ships$ = useRef({});
 
   const ships = useStore(s => s.ships);
@@ -94,44 +202,59 @@ export default function MapBox({ isCommand }) {
   const previewRouteId = useStore(s => s.previewRouteId);
   const routeOptAdded = useRef(false);
 
-  // ── Build popup HTML ────────────────────────────────────────────────────────
   const popupHtml = useCallback((ship) => {
     const st = getStatus(ship.status);
     const fuelPct = Math.min(100, ((ship.fuel || 0) / 8500) * 100);
-    const fuelBar = `<div style="height:4px;background:#FFFAF0;border-radius:2px;margin-top:4px"><div style="height:100%;width:${fuelPct}%;background:${fuelPct > 50 ? '#2e7d6e' : fuelPct > 20 ? '#c07c2b' : '#c0392b'};border-radius:2px"></div></div>`;
+    const fuelColor = fuelPct > 50 ? '#2e7d6e' : fuelPct > 20 ? '#e67e22' : '#c0392b';
     const eta = ship.eta_seconds ? (() => {
       const h = Math.floor(ship.eta_seconds / 3600);
       const m = Math.floor((ship.eta_seconds % 3600) / 60);
       return h > 0 ? `${h}h ${m}m` : `${m}m`;
     })() : '—';
-    return `<div style="font-family:'Sora',sans-serif;min-width:200px;color:#2b3b49;padding:2px">
-      <div style="font-weight:800;font-size:14px;margin-bottom:2px">${ship.name} <span style="font-size:10px;color:#81A6C6;font-weight:600">${ship.id}</span></div>
-      <div style="font-size:10px;color:#81A6C6;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.1em">${ship.type || 'Cargo'} · ${ship.flag || '—'}</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:8px">
-        <div style="background:#FFFAF0;border-radius:7px;padding:6px 8px;border:1px solid #FFFAF0">
-          <div style="font-size:9px;color:#81A6C6;text-transform:uppercase;font-weight:700;margin-bottom:1px">Speed</div>
-          <div style="font-size:13px;font-weight:700;font-family:monospace">${ship.speed || 0} kn</div>
+    const distKm = ship.dist_to_dest_km != null ? `${Number(ship.dist_to_dest_km).toFixed(0)} km` : '—';
+    const speedKn = ship.speed?.toFixed(1) ?? '0';
+    const fuelT = ship.fuel?.toFixed(0) ?? '0';
+    return `
+    <div style="font-family:system-ui,sans-serif;width:260px;background:#fff;overflow:hidden">
+      <!-- Header strip -->
+      <div style="background:${st.color};padding:10px 14px 8px;">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-size:15px;font-weight:800;color:#fff;letter-spacing:-0.02em">${ship.name}</div>
+            <div style="font-size:10px;color:rgba(255,255,255,0.75);font-weight:600;letter-spacing:0.1em;text-transform:uppercase">${ship.id} · ${ship.type || 'Cargo'}</div>
+          </div>
+          <span style="font-size:10px;font-weight:700;padding:3px 9px;border-radius:999px;background:rgba(255,255,255,0.22);color:#fff;white-space:nowrap">${st.label}</span>
         </div>
-        <div style="background:#FFFAF0;border-radius:7px;padding:6px 8px;border:1px solid #FFFAF0">
-          <div style="font-size:9px;color:#81A6C6;text-transform:uppercase;font-weight:700;margin-bottom:1px">Heading</div>
-          <div style="font-size:13px;font-weight:700;font-family:monospace">${Math.round(ship.heading || 0)}°</div>
-        </div>
-        <div style="background:#FFFAF0;border-radius:7px;padding:6px 8px;border:1px solid #FFFAF0">
-          <div style="font-size:9px;color:#81A6C6;text-transform:uppercase;font-weight:700;margin-bottom:1px">Fuel</div>
-          <div style="font-size:13px;font-weight:700;font-family:monospace">${ship.fuel?.toFixed(0) || 0}t</div>
-          ${fuelBar}
-        </div>
-        <div style="background:#FFFAF0;border-radius:7px;padding:6px 8px;border:1px solid #FFFAF0">
-          <div style="font-size:9px;color:#81A6C6;text-transform:uppercase;font-weight:700;margin-bottom:1px">ETA</div>
-          <div style="font-size:13px;font-weight:700;font-family:monospace">${eta}</div>
+        <!-- Fuel bar -->
+        <div style="margin-top:8px">
+          <div style="display:flex;justify-content:space-between;font-size:9px;color:rgba(255,255,255,0.75);margin-bottom:3px">
+            <span>FUEL</span><span>${fuelT}t · ${fuelPct.toFixed(0)}%</span>
+          </div>
+          <div style="height:4px;background:rgba(255,255,255,0.25);border-radius:2px">
+            <div style="height:100%;width:${fuelPct}%;background:rgba(255,255,255,0.9);border-radius:2px;transition:width 0.4s"></div>
+          </div>
         </div>
       </div>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
-        <span style="font-size:11px;color:#5f6b77">→ <strong>${ship.destination_port}</strong></span>
-        <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;background:${st.color}22;color:${st.color};border:1px solid ${st.color}44">${st.label}</span>
+
+      <!-- Stats row -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:#e8f0f5">
+        ${[['Speed', speedKn + ' kn'], ['ETA', eta], ['Distance', distKm]].map(([label, val]) =>
+          `<div style="background:#fff;padding:7px 8px;text-align:center">
+            <div style="font-size:9px;color:#8ba8bc;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:2px">${label}</div>
+            <div style="font-size:12px;font-weight:800;color:#1a2b38">${val}</div>
+          </div>`).join('')}
       </div>
-      <div style="font-size:11px;color:#5f6b77">Cargo: <strong>${ship.cargo || '—'}</strong></div>
-      ${!ship.can_reach_dest ? `<div style="margin-top:6px;padding:5px 8px;background:#fef0f0;border:1px solid #c0392b33;border-radius:6px;font-size:11px;color:#c0392b;font-weight:600">Insufficient fuel to reach ${ship.destination_port}</div>` : ''}
+
+      <!-- Destination row -->
+      <div style="padding:8px 14px;border-top:1px solid #eef3f7;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:11px;color:#8ba8bc;font-weight:600">→ TO</span>
+        <span style="font-size:12px;font-weight:800;color:#1a2b38">${ship.destination_port || '—'}</span>
+      </div>
+
+      ${!ship.can_reach_dest ? `
+      <div style="padding:6px 14px 8px;background:#fef6f6;border-top:1px solid #fccaca">
+        <span style="font-size:11px;color:#c0392b;font-weight:700">⚠ Insufficient fuel to reach ${ship.destination_port}</span>
+      </div>` : ''}
     </div>`;
   }, []);
 
@@ -150,6 +273,24 @@ export default function MapBox({ isCommand }) {
       maxBounds: [[44.0, 19.0], [64.0, 33.0]],
     });
 
+    // ── Apply maritime color palette after style loads ───────────────────────
+    map.current.on('style.load', () => {
+      // Soft teal-blue water
+      const waterLayers = ['water', 'water-shadow', 'waterway'];
+      waterLayers.forEach(id => {
+        if (map.current.getLayer(id)) {
+          const type = map.current.getLayer(id).type;
+          if (type === 'fill') map.current.setPaintProperty(id, 'fill-color', '#a8d8ea');
+          if (type === 'line') map.current.setPaintProperty(id, 'line-color', '#7bbfd4');
+        }
+      });
+      // Soft warm land
+      if (map.current.getLayer('land')) map.current.setPaintProperty('land', 'background-color', '#f2ede6');
+      if (map.current.getLayer('landcover')) map.current.setPaintProperty('landcover', 'fill-color', '#e8e2d8');
+      if (map.current.getLayer('national-park')) map.current.setPaintProperty('national-park', 'fill-color', '#dce8d0');
+      if (map.current.getLayer('landuse')) map.current.setPaintProperty('landuse', 'fill-color', '#e5dfd6');
+    });
+
     map.current.addControl(new mapboxgl.NavigationControl({ showCompass: true }), 'top-right');
     map.current.addControl(new mapboxgl.ScaleControl({ unit: 'nautical' }), 'bottom-right');
 
@@ -157,6 +298,7 @@ export default function MapBox({ isCommand }) {
       draw.current = new MapboxDraw({
         displayControlsDefault: false,
         controls: { polygon: true, trash: true },
+        defaultMode: 'simple_select',
         styles: [
           {
             id: 'fill', type: 'fill', filter: ['all', ['==', '$type', 'Polygon']],
@@ -178,10 +320,16 @@ export default function MapBox({ isCommand }) {
             id: 'vertex', type: 'circle', filter: ['all', ['==', '$type', 'Point']],
             paint: { 'circle-color': '#c0392b', 'circle-radius': 5, 'circle-stroke-width': 2, 'circle-stroke-color': '#fff' }
           },
+          {
+            // midpoint handles for inserting vertices
+            id: 'midpoint', type: 'circle', filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']],
+            paint: { 'circle-color': '#fff', 'circle-radius': 4, 'circle-stroke-width': 2, 'circle-stroke-color': '#c0392b' }
+          },
         ],
       });
       map.current.addControl(draw.current, 'top-left');
 
+      // Zone created — persist to backend
       map.current.on('draw.create', async e => {
         const coords = e.features[0].geometry.coordinates[0].map(([lng, lat]) => [lat, lng]);
         await createZone(`Zone-${new Date().toLocaleTimeString()}`, coords);
@@ -212,11 +360,18 @@ export default function MapBox({ isCommand }) {
       });
       weatherAdded.current = true;
 
-      // Routes (live ship paths)
+      // Routes (live ship paths) — drawn beneath ship markers
       map.current.addSource('routes-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      // Soft glow beneath the route line
+      map.current.addLayer({
+        id: 'routes-glow', type: 'line', source: 'routes-src',
+        paint: { 'line-color': ['get', 'color'], 'line-width': 6, 'line-opacity': 0.12, 'line-blur': 4 },
+        layout: { 'line-join': 'round', 'line-cap': 'round' }
+      });
+      // Dashed active route line
       map.current.addLayer({
         id: 'routes-line', type: 'line', source: 'routes-src',
-        paint: { 'line-color': ['get', 'color'], 'line-width': 1.5, 'line-opacity': 0.55, 'line-dasharray': [4, 3] },
+        paint: { 'line-color': ['get', 'color'], 'line-width': 2, 'line-opacity': 0.75, 'line-dasharray': [5, 3] },
         layout: { 'line-join': 'round', 'line-cap': 'round' }
       });
       routeAdded.current = true;
@@ -309,18 +464,32 @@ export default function MapBox({ isCommand }) {
   // ── Update route paths ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!map.current || !routeAdded.current) return;
-    map.current.getSource('routes-src')?.setData({
+    const src = map.current.getSource('routes-src');
+    if (!src) return;
+    src.setData({
       type: 'FeatureCollection',
       features: ships
         .filter(s => s.route_path && s.route_path.length >= 2)
-        .map(s => ({
-          type: 'Feature',
-          properties: { id: s.id, color: getStatus(s.status).color },
-          geometry: {
-            type: 'LineString',
-            coordinates: [[s.lng, s.lat], ...s.route_path.map(([la, ln]) => [ln, la])]
-          },
-        })),
+        .map(s => {
+          // Convert [lat,lng] → [lng,lat] and filter out of nav polygon
+          let pts = s.route_path
+            .map(([la, ln]) => [ln, la])
+            .filter(([wLng, wLat]) => onWater(wLat, wLng));
+          
+          const shipLat = s.lat, shipLng = s.lng;
+          let pathStart = 0;
+          while (pathStart < pts.length - 1) {
+            const [wLng, wLat] = pts[pathStart];
+            if (Math.abs(wLng - shipLng) < 0.08 && Math.abs(wLat - shipLat) < 0.08) pathStart++;
+            else break;
+          }
+          const coords = [[shipLng, shipLat], ...pts.slice(pathStart)];
+          return {
+            type: 'Feature',
+            properties: { id: s.id, color: getStatus(s.status).color },
+            geometry: { type: 'LineString', coordinates: coords },
+          };
+        }),
     });
   }, [ships]);
 
@@ -344,43 +513,79 @@ export default function MapBox({ isCommand }) {
   }, [routeOptions, previewRouteId]);
 
   // ── Absorb server ticks into ships$ interpolation state ────────────────────
-  // This effect ONLY updates the target position; the RAF loop does all movement.
   useEffect(() => {
     if (!map.current) return;
-
-    const now = performance.now();
 
     ships.forEach(ship => {
       const st = getStatus(ship.status);
       const isSelected = ship.id === selectedShipId;
       const ref = ships$.current[ship.id];
 
+      // Build a path queue [[lng,lat],...], filtering to water-only waypoints
+      const buildQueue = (curLng, curLat) => {
+        if (!ship.route_path || ship.route_path.length === 0) return [[ship.lng, ship.lat]];
+        let all = ship.route_path
+          .map(([la, ln]) => [ln, la])
+          .filter(([wLng, wLat]) => onWater(wLat, wLng));
+        if (all.length === 0) all = [[ship.lng, ship.lat]];
+        let start = 0;
+        while (start < all.length - 1) {
+          const [wLng, wLat] = all[start];
+          if (Math.abs(wLng - curLng) < WAYPOINT_REACH_DEG && Math.abs(wLat - curLat) < WAYPOINT_REACH_DEG) start++;
+          else break;
+        }
+        return all.slice(start);
+      };
+
       if (!ref) {
         // ── First time: spawn marker exactly at server position ───────────────
-        const el = makeShipEl(st.color, isSelected);
+        const el = makeShipEl(st.color, isSelected, ship.status);
 
+        // No fixed anchor — Mapbox auto-picks best direction to stay on screen
         const popup = new mapboxgl.Popup({
-          offset: 22, closeButton: true, closeOnClick: false,
-          className: 'ship-popup', maxWidth: '280px',
+          offset: { 'bottom': [0, -50], 'bottom-left': [6, -50], 'bottom-right': [-6, -50],
+                    'top': [0, 10], 'top-left': [6, 10], 'top-right': [-6, 10],
+                    'left': [10, 0], 'right': [-10, 0] },
+          closeButton: true, closeOnClick: false,
+          className: 'ship-popup', maxWidth: '260px',
         }).setHTML(popupHtml(ship));
 
+        // Spawn ship at first WATER waypoint from route_path, fallback to server pos
+        const firstWaterWp = ship.route_path?.find(([la, ln]) => onWater(la, ln));
+        const spawnLng = firstWaterWp ? firstWaterWp[1] : ship.lng;
+        const spawnLat = firstWaterWp ? firstWaterWp[0] : ship.lat;
+
         let pinned = false;
+        let hideTimer = null;
 
-        el.addEventListener('mouseenter', () => {
-          popup.setHTML(popupHtml(
-            (ships$.current[ship.id] && ships$.current[ship.id]._lastShip) || ship
-          ));
+        const showPopup = () => {
+          clearTimeout(hideTimer);
+          const curRef = ships$.current[ship.id];
+          popup.setHTML(popupHtml((curRef && curRef._lastShip) || ship));
+          popup.setLngLat([curRef ? curRef.curLng : ship.lng, curRef ? curRef.curLat : ship.lat]);
           if (!popup.isOpen()) popup.addTo(map.current);
-        });
+        };
 
-        el.addEventListener('mouseleave', () => {
-          if (!pinned) popup.remove();
+        const hidePopup = () => {
+          clearTimeout(hideTimer);
+          if (!pinned) hideTimer = setTimeout(() => popup.remove(), 120);
+        };
+
+        el.addEventListener('mouseenter', showPopup);
+        el.addEventListener('mouseleave', hidePopup);
+
+        // Keep popup open when mouse is over the popup itself
+        popup.on('open', () => {
+          const pe = popup.getElement();
+          if (pe) {
+            pe.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+            pe.addEventListener('mouseleave', hidePopup);
+          }
         });
 
         el.addEventListener('click', e => {
           e.stopPropagation();
           setSelectedShipId(ship.id);
-          // un-pin all others
           Object.values(ships$.current).forEach(m => { m._pinned = false; });
           pinned = true;
           ships$.current[ship.id] && (ships$.current[ship.id]._pinned = true);
@@ -390,40 +595,23 @@ export default function MapBox({ isCommand }) {
           popup.addTo(map.current);
         });
 
-        const marker = new mapboxgl.Marker({
-          element: el, rotationAlignment: 'map',
-          pitchAlignment: 'map', anchor: 'center',
-        })
-          .setLngLat([ship.lng, ship.lat])
+        const marker = new mapboxgl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map', anchor: 'center' })
+          .setLngLat([spawnLng, spawnLat])
           .setRotation(ship.heading || 0)
           .addTo(map.current);
 
         ships$.current[ship.id] = {
           marker, popup, el,
-          curLng: ship.lng, curLat: ship.lat, curHdg: ship.heading || 0,
-          tgtLng: ship.lng, tgtLat: ship.lat, tgtHdg: ship.heading || 0,
+          curLng: spawnLng, curLat: spawnLat, curHdg: ship.heading || 0,
+          pathQueue: buildQueue(spawnLng, spawnLat),
           speed: ship.speed || 0,
-          lastMs: now,
-          _pinned: false,
-          _lastShip: ship,
+          _pinned: false, _lastShip: ship,
         };
-
       } else {
-        // ── Subsequent tick: update target, keep cur as-is (RAF interpolates) ─
-        ref.tgtLng = ship.lng;
-        ref.tgtLat = ship.lat;
-        ref.tgtHdg = ship.heading || 0;
+        // ── Subsequent tick: refresh waypoint queue ──────────────────────────
+        ref.pathQueue = buildQueue(ref.curLng, ref.curLat);
         ref.speed = ship.speed || 0;
-        ref.lastMs = now;
         ref._lastShip = ship;
-
-        // Visual updates
-        const svg = ref.el.querySelector('polygon');
-        if (svg) svg.setAttribute('fill', st.color);
-        ref.el.style.filter = isSelected
-          ? 'drop-shadow(0 0 8px rgba(129,166,198,0.9))'
-          : 'drop-shadow(0 2px 4px rgba(0,0,0,0.35))';
-
         if (ref.popup.isOpen()) ref.popup.setHTML(popupHtml(ship));
       }
     });
@@ -439,37 +627,58 @@ export default function MapBox({ isCommand }) {
     });
   }, [ships, selectedShipId, popupHtml, setSelectedShipId]);
 
-  // ── RAF loop: smooth interpolation at 60 fps ────────────────────────────────
+  // ── RAF loop: path-following movement at 60 fps ─────────────────────────────
+  // Ships move along their route_path waypoints so they NEVER cut across land.
   useEffect(() => {
     let prevMs = performance.now();
 
     function frame(nowMs) {
-      const dtSec = Math.min((nowMs - prevMs) / 1000, 0.1); // cap at 100 ms to survive tab-hide
+      const dtSec = Math.min((nowMs - prevMs) / 1000, 0.1);
       prevMs = nowMs;
 
       Object.values(ships$.current).forEach(ref => {
-        // ── latitude / longitude ─────────────────────────────────────────────
-        const dLat = ref.tgtLat - ref.curLat;
-        const dLng = ref.tgtLng - ref.curLng;
+        if (!ref.pathQueue || ref.pathQueue.length === 0) return;
 
-        // Max degrees the ship can physically travel this frame
+        // Distance (in degrees) the ship can travel this frame
         const maxDelta = MAX_DEG_S * dtSec;
+        let budget = maxDelta;
 
-        // Step size: lerp coefficient = 8 gives ~95 % convergence in 0.375 s
-        // but never exceed what the ship speed allows
-        const stepLat = Math.max(-maxDelta, Math.min(maxDelta, dLat * 8 * dtSec));
-        const stepLng = Math.max(-maxDelta, Math.min(maxDelta, dLng * 8 * dtSec));
+        // Walk along waypoints, consuming budget
+        while (budget > 0 && ref.pathQueue.length > 0) {
+          const [wLng, wLat] = ref.pathQueue[0];
+          const dLng = wLng - ref.curLng;
+          const dLat = wLat - ref.curLat;
+          const dist = Math.sqrt(dLng * dLng + dLat * dLat);
 
-        // If already very close, snap to avoid floating-point drift
-        ref.curLat = Math.abs(dLat) < 1e-7 ? ref.tgtLat : ref.curLat + stepLat;
-        ref.curLng = Math.abs(dLng) < 1e-7 ? ref.tgtLng : ref.curLng + stepLng;
+          if (dist <= budget) {
+            // Reach this waypoint exactly and pop it
+            ref.curLng = wLng;
+            ref.curLat = wLat;
+            budget -= dist;
+            ref.pathQueue.shift();
+          } else {
+            // Move as far as budget allows toward this waypoint
+            const ratio = budget / dist;
+            ref.curLng += dLng * ratio;
+            ref.curLat += dLat * ratio;
+            budget = 0;
+          }
+        }
 
-        // ── heading ──────────────────────────────────────────────────────────
-        const dHdg = shortAngleDiff(ref.curHdg, ref.tgtHdg);
-        const stepHdg = dHdg * 5 * dtSec;           // 5 rad/s-equivalent convergence
-        ref.curHdg = Math.abs(dHdg) < 0.1 ? ref.tgtHdg : ref.curHdg + stepHdg;
+        // ── heading: point toward next waypoint ─────────────────────────────
+        if (ref.pathQueue.length > 0) {
+          const [wLng, wLat] = ref.pathQueue[0];
+          const dLng = wLng - ref.curLng;
+          const dLat = wLat - ref.curLat;
+          if (Math.abs(dLng) > 1e-6 || Math.abs(dLat) > 1e-6) {
+            const targetHdg = (Math.atan2(dLng, dLat) * 180 / Math.PI + 360) % 360;
+            const dHdg = shortAngleDiff(ref.curHdg, targetHdg);
+            ref.curHdg = Math.abs(dHdg) < 0.2 ? targetHdg : ref.curHdg + dHdg * 6 * dtSec;
+          }
+        }
 
         ref.marker.setLngLat([ref.curLng, ref.curLat]).setRotation(ref.curHdg);
+        if (ref.popup && ref.popup.isOpen()) ref.popup.setLngLat([ref.curLng, ref.curLat]);
       });
 
       rafRef.current = requestAnimationFrame(frame);
@@ -477,32 +686,10 @@ export default function MapBox({ isCommand }) {
 
     rafRef.current = requestAnimationFrame(frame);
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, []); // stable — reads ships$.current live
+  }, []);
 
   return (
     <>
-      <style>{`
-        .ship-popup .mapboxgl-popup-content {
-          background:#ffffff !important;border:1px solid #FFFAF0 !important;
-          border-radius:14px !important;padding:14px 16px !important;
-          box-shadow:0 8px 28px rgba(43,59,73,0.18) !important;font-size:13px !important;
-        }
-        .ship-popup .mapboxgl-popup-tip { border-top-color:#ffffff !important; }
-        .ship-popup .mapboxgl-popup-close-button {
-          color:#81A6C6 !important;font-size:16px !important;top:6px !important;right:10px !important;
-        }
-        .mapboxgl-ctrl-group {
-          background:#ffffff !important;border:1px solid #FFFAF0 !important;
-          border-radius:10px !important;box-shadow:0 2px 8px rgba(43,59,73,0.12) !important;
-        }
-        .mapboxgl-ctrl-group button { background:#ffffff !important;color:#81A6C6 !important; }
-        .mapboxgl-ctrl-group button:hover { background:#FFFAF0 !important; }
-        .mapboxgl-ctrl-scale {
-          background:rgba(255,255,255,0.9) !important;border-color:#FFFAF0 !important;
-          color:#5f6b77 !important;border-radius:4px !important;font-size:10px !important;
-        }
-        .mapbox-gl-draw_ctrl-draw-btn { background-color:#ffffff !important; }
-      `}</style>
       <div ref={mapContainer} style={{ width: '100%', height: '100%' }} />
     </>
   );

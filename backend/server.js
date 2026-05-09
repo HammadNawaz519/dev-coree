@@ -144,13 +144,15 @@ const N8N_DISTRESS_URL = 'https://beaniegame.app.n8n.cloud/webhook/distress-call
 const N8N_GEOFENCE_URL = 'https://beaniegame.app.n8n.cloud/webhook/geofence-alert';
 
 // ── App setup ─────────────────────────────────────────────────────────────────
+const FRONTEND_URL = process.env.FRONTEND_URL || '*';
+
 const app = express();
-app.use(cors());
+app.use(cors({ origin: FRONTEND_URL }));
 app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST', 'DELETE'] },
+  cors: { origin: FRONTEND_URL, methods: ['GET', 'POST', 'DELETE'] },
   transports: ['websocket', 'polling'],
 });
 
@@ -228,9 +230,48 @@ async function subscribeFleetChannel() {
   console.log('[Redis] Subscribed to', KEY.fleetChannel);
 }
 
-// ── AI distress helpers ───────────────────────────────────────────────────────
-const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
+// ── AI configuration (all from env — no hardcoded keys) ──────────────────────
+const OPENROUTER_KEY   = process.env.OPENROUTER_API_KEY || '';
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL   || 'google/gemini-2.0-flash-exp:free';
 
+// Unified LLM caller via OpenRouter
+async function callAI(systemPrompt, userContent, maxTokens = 400) {
+  // Tier 1: OpenRouter (OpenAI-compatible, supports 200+ models)
+  if (OPENROUTER_KEY) {
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENROUTER_KEY}`,
+          'Content-Type':  'application/json',
+          'HTTP-Referer':  'http://localhost',
+          'X-Title':       'Fleet Command System',
+        },
+        body: JSON.stringify({
+          model: OPENROUTER_MODEL,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user',   content: userContent  },
+          ],
+          max_tokens: maxTokens,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status}: ${await res.text()}`);
+      const body = await res.json();
+      const text = body.choices?.[0]?.message?.content || '';
+      if (!text) throw new Error('Empty response from OpenRouter');
+      console.log(`[AI] OpenRouter (${OPENROUTER_MODEL}) OK`);
+      return text;
+    } catch (e) {
+      console.warn(`[AI] OpenRouter failed: ${e.message}`);
+    }
+  }
+
+  return null; // provider unavailable → caller uses keyword fallback
+}
+
+// ── Distress NLP helpers ──────────────────────────────────────────────────────
 async function aiExtractN8N(message) {
   try {
     const res = await fetch(N8N_DISTRESS_URL, {
@@ -252,36 +293,23 @@ async function aiExtractN8N(message) {
     }
     throw new Error('n8n returned unexpected shape');
   } catch (e) {
-    console.log(`[n8n-distress] failed: ${e.message} — falling back to Gemini`);
+    console.log(`[n8n-distress] failed: ${e.message} — falling back to AI provider`);
     return null;
   }
 }
 
-async function aiExtractGemini(message) {
-  if (!GEMINI_KEY) return null;
-  const PROMPT = `Analyze this maritime distress message and extract structured JSON ONLY:
-{"severity":1-10,"incident_type":"fire|flooding|collision|mechanical|medical|piracy|weather|other",
-"injury_count":0,"damage_estimate":"unknown","immediate_needs":"...","summary":"1 sentence"}
-
-Message: `;
+async function aiExtractLLM(message) {
+  const systemPrompt = 'You are a maritime emergency analyst. Extract structured data from distress messages. Respond with JSON only, no markdown.';
+  const userContent  = `Analyze this maritime distress message and respond with a JSON object ONLY:\n{"severity":1-10,"incident_type":"fire|flooding|collision|mechanical|medical|piracy|weather|other","injury_count":0,"damage_estimate":"string","immediate_needs":"string","summary":"one sentence"}\n\nMessage: ${message}`;
+  const text = await callAI(systemPrompt, userContent, 250);
+  if (!text) return null;
   try {
-    const res = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-      {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${GEMINI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gemini-2.0-flash', messages: [{ role: 'user', content: PROMPT + message }], max_tokens: 250 }),
-        signal: AbortSignal.timeout(12000),
-      }
-    );
-    const body = await res.json();
-    const content = body.choices?.[0]?.message?.content || '';
-    const m = content.match(/\{[\s\S]*\}/);
+    const m = text.match(/\{[\s\S]*\}/);
     if (m) {
       const parsed = JSON.parse(m[0]);
-      return { ...parsed, source: 'gemini', issue: parsed.incident_type, impact_quantified: parsed.damage_estimate };
+      return { ...parsed, source: 'openrouter', issue: parsed.incident_type, impact_quantified: parsed.damage_estimate };
     }
-  } catch (e) { console.log(`[Gemini] failed: ${e.message}`); }
+  } catch (e) { console.warn('[AI] distress JSON parse failed:', e.message); }
   return null;
 }
 
@@ -309,12 +337,13 @@ function aiExtractKeyword(message) {
 async function aiExtract(message) {
   const n8n = await aiExtractN8N(message);
   if (n8n) return n8n;
-  const gemini = await aiExtractGemini(message);
-  if (gemini) return gemini;
+  const llm = await aiExtractLLM(message);
+  if (llm) return llm;
   return aiExtractKeyword(message);
 }
 
 // ── REST API ──────────────────────────────────────────────────────────────────
+
 app.get('/api/fleet', (_req, res) => res.json(engine.getState()));
 
 app.get('/api/zones', (_req, res) => res.json(Object.values(engine.zones)));
@@ -333,7 +362,7 @@ app.delete('/api/zones/:zoneId', (req, res) => {
 });
 
 // S2S operation types that should be applied immediately (no accept/reject needed)
-const S2S_TYPES = new Set(['FUEL_TRANSFER', 'ESCORT', 'MEDICAL_AID', 'CANCEL_ESCORT']);
+const S2S_TYPES = new Set(['FUEL_TRANSFER', 'ESCORT', 'MEDICAL_AID', 'CANCEL_ESCORT', 'SET_ROUTE_PATH']);
 
 app.post('/api/directives', (req, res) => {
   const data = req.body;
@@ -507,45 +536,54 @@ app.get('/api/latency', (_req, res) => res.json(latencyStats()));
 // ── AI Fleet Advisor ──────────────────────────────────────────────────────────
 app.post('/api/advisor', async (req, res) => {
   const state = engine.getState();
-  const summary = state.ships.map(s =>
+  const fleetSnapshotText = state.ships.map(s =>
     `${s.name}(${s.id}): status=${s.status} fuel=${s.fuel?.toFixed(0)}t dist=${s.dist_to_dest_km}km canReach=${s.can_reach_dest} heading=${Math.round(s.heading)}°`
   ).join('\n');
   const alertSummary = state.alerts.map(a => `[${a.type}] ${a.message}`).join('\n') || 'None';
   const prompt = `You are an AI fleet advisor for a maritime command system in the Strait of Hormuz crisis.
 Current fleet state:
-${summary}
+${fleetSnapshotText}
 Active alerts: ${alertSummary}
 Weather zones: ${state.weather_zones.length} storm areas active.
 
 Provide 3-5 specific, actionable recommendations for the fleet commander. Be concise and direct. Format as JSON array: [{"priority":"high|medium|low","action":"...","reasoning":"...","ship_ids":["MV-X"]}]`;
 
   let advice = [];
-  if (GEMINI_KEY) {
+  const aiText = await callAI(
+    'You are an AI fleet advisor for a maritime command system in the Strait of Hormuz crisis. Respond with a JSON array only, no markdown.',
+    `Current fleet state:\n${fleetSnapshotText}\nActive alerts: ${alertSummary}\nWeather zones: ${state.weather_zones.length} storm areas active.\n\nProvide 3-5 specific, actionable recommendations. Format as JSON array: [{"priority":"high|medium|low","action":"...","reasoning":"...","ship_ids":["MV-X"]}]`,
+    600
+  );
+  if (aiText) {
     try {
-      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${GEMINI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gemini-2.0-flash', messages: [{ role: 'user', content: prompt }], max_tokens: 600 }),
-        signal: AbortSignal.timeout(15000),
-      });
-      const body = await r.json();
-      const content = body.choices?.[0]?.message?.content || '';
-      const m = content.match(/\[[\s\S]*\]/);
+      const m = aiText.match(/\[[\s\S]*\]/);
       if (m) advice = JSON.parse(m[0]);
-    } catch (e) { console.log('[Advisor] AI failed:', e.message); }
+    } catch (e) { console.log('[Advisor] JSON parse failed:', e.message); }
   }
 
   if (!advice.length) {
     const low      = state.ships.filter(s => !s.can_reach_dest && s.status !== 'arrived');
     const distress = state.ships.filter(s => s.status === 'distressed');
     const rerouting = state.ships.filter(s => s.status === 'rerouting');
-    if (low.length)       advice.push({ priority: 'high',   action: `Reroute ${low.map(s=>s.name).join(', ')} to nearest port`,        reasoning: 'Insufficient fuel to reach destination', ship_ids: low.map(s=>s.id) });
-    if (distress.length)  advice.push({ priority: 'high',   action: `Dispatch assistance to ${distress.map(s=>s.name).join(', ')}`,     reasoning: 'Ships in distress status',               ship_ids: distress.map(s=>s.id) });
-    if (rerouting.length) advice.push({ priority: 'medium', action: `Monitor ${rerouting.map(s=>s.name).join(', ')} - replanning path`, reasoning: 'Active rerouting may delay ETA',         ship_ids: rerouting.map(s=>s.id) });
-    if (state.weather_zones.length) advice.push({ priority: 'low', action: 'Consider routing tankers north of storm zone', reasoning: `${state.weather_zones.length} adverse weather zones active`, ship_ids: [] });
-    if (!advice.length)   advice.push({ priority: 'low', action: 'Fleet nominal. Continue monitoring.', reasoning: 'No critical conditions detected', ship_ids: [] });
+    if (low.length)       advice.push({ urgency:'high',   title:'Fuel Critical', action_type:'reroute', action: `Reroute ${low.map(s=>s.name).join(', ')} to nearest port`, reasoning: 'Ship(s) cannot reach destination on current fuel. Immediate reroute required.', ship_ids: low.map(s=>s.id) });
+    if (distress.length)  advice.push({ urgency:'critical', title:'Distress Response', action_type:'send-aid', action: `Dispatch assistance to ${distress.map(s=>s.name).join(', ')}`, reasoning: 'Ship(s) in distress status — require immediate support or medical aid.', ship_ids: distress.map(s=>s.id) });
+    if (rerouting.length) advice.push({ urgency:'medium', title:'Reroute Monitoring', action_type:'reroute', action: `Monitor ${rerouting.map(s=>s.name).join(', ')} — path replanning active`, reasoning: 'Active rerouting may significantly delay ETA. Verify new paths clear all zones.', ship_ids: rerouting.map(s=>s.id) });
+    if (state.weather_zones.length) advice.push({ urgency:'low', title:'Weather Advisory', action_type:'draw-zone', action: 'Consider routing tankers north of active storm zone', reasoning: `${state.weather_zones.length} adverse weather zone(s) active — 30% fuel penalty applies inside.`, ship_ids: [] });
+    if (!advice.length)   advice.push({ urgency:'info', title:'Fleet Nominal', action_type:'default', action: 'Continue monitoring — no immediate action required.', reasoning: 'All ships operating normally within navigable bounds.', ship_ids: [] });
   }
-  res.json({ advice, generated_at: Date.now() / 1000 });
+
+  // Normalize Gemini output shape (uses 'priority' not 'urgency')
+  const recommendations = advice.map(r => ({
+    ...r,
+    urgency:     r.urgency || r.priority || 'info',
+    title:       r.title || r.action?.split(' ').slice(0,3).join(' ') || 'Recommendation',
+    action_type: r.action_type || 'default',
+  }));
+
+  const activeShips = state.ships.filter(s => s.status !== 'arrived').length;
+  const summary = `Fleet status: ${activeShips} active ships, ${state.alerts.filter(a=>!a.acknowledged).length} unacknowledged alerts, ${state.weather_zones.length} weather zone(s). ${recommendations.filter(r=>r.urgency==='critical'||r.urgency==='high').length} high-priority action(s) recommended.`;
+
+  res.json({ recommendations, summary, generated_at: Date.now() / 1000 });
 });
 
 app.get('/health', (_req, res) => {
